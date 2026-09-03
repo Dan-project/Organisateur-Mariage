@@ -942,6 +942,16 @@
 
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+  // toISOString() convertit en UTC : à des heures tardives, ça peut faire
+  // basculer sur le jour précédent selon le fuseau horaire du visiteur.
+  // On formate donc les dates de calendrier à partir de l'heure locale.
+  function toDateStr(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
   function showToast(msg) {
     const t = document.getElementById('toast');
     t.textContent = msg;
@@ -1138,7 +1148,7 @@
     state.events.forEach(e => items.push({ date: e.date, title: e.title, type: 'event' }));
     state.tasks.filter(t => !t.done && t.dueDate).forEach(t => items.push({ date: t.dueDate, title: t.title, type: 'task' }));
     items.sort((a,b) => a.date.localeCompare(b.date));
-    const upcoming = items.filter(i => i.date >= today.toISOString().slice(0,10)).slice(0, 6);
+    const upcoming = items.filter(i => i.date >= toDateStr(today)).slice(0, 6);
     const upcomingEl = document.getElementById('upcomingList');
     if (!upcoming.length) {
       upcomingEl.innerHTML = '<div class="empty">Rien de prévu pour l\'instant.</div>';
@@ -1293,7 +1303,7 @@
       groups[t.category].push(t);
     });
     const el = document.getElementById('taskGroups');
-    const todayStr = new Date().toISOString().slice(0,10);
+    const todayStr = toDateStr(new Date());
     let html = '';
     Object.keys(groups).forEach(cat => {
       const items = groups[cat];
@@ -1553,7 +1563,7 @@
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const daysInPrevMonth = new Date(year, month, 0).getDate();
 
-    const todayStr = new Date().toISOString().slice(0,10);
+    const todayStr = toDateStr(new Date());
 
     const eventsByDate = {};
     state.events.forEach(e => { (eventsByDate[e.date] = eventsByDate[e.date] || []).push(e); });
@@ -1576,7 +1586,7 @@
       } else {
         cellDate = new Date(year, month, dayNum);
       }
-      const dateStr = cellDate.toISOString().slice(0,10);
+      const dateStr = toDateStr(cellDate);
       const isToday = dateStr === todayStr;
       const hasEvents = eventsByDate[dateStr];
       const hasTasks = tasksByDate[dateStr];
@@ -1669,9 +1679,10 @@
     state.events.push({ id: uid(), date: dayModalDate, title });
     await saveEvents();
     titleEl.value = '';
-    renderDayEvents();
     renderCalendar();
     renderOverview();
+    document.getElementById('dayModalOverlay').classList.remove('open');
+    showToast('Événement ajouté');
   });
 
   // close modals on overlay click
