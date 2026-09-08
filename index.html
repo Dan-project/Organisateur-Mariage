@@ -398,7 +398,7 @@
   .budget-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 24px; align-items: start; }
   .budget-table .row {
     display: grid;
-    grid-template-columns: 1fr 1fr 90px 90px 90px 32px;
+    grid-template-columns: 1fr 90px 90px 90px 32px;
     gap: 10px; align-items: center;
     padding: 10px 4px; border-bottom: 1px solid var(--border);
     font-size: 13.5px;
@@ -423,7 +423,7 @@
   @media (max-width: 820px) {
     .budget-layout { grid-template-columns: 1fr; }
     .budget-stat-grid { grid-template-columns: 1fr 1fr; }
-    .budget-table .row { grid-template-columns: 1fr 1fr 70px 70px 70px 28px; font-size: 12.5px; }
+    .budget-table .row { grid-template-columns: 1fr 70px 70px 70px 28px; font-size: 12.5px; }
   }
 
   /* ---------- Notes ---------- */
@@ -787,7 +787,7 @@
 
           <div class="add-task-row budget-add-row">
             <select id="newBudgetCategory"></select>
-            <input type="text" id="newBudgetLabel" placeholder="Poste (ex : Robe de mariée)…">
+            <input type="text" id="newBudgetLabel" placeholder="Précisez (ex : location voiture)…" style="display:none;">
             <input type="number" id="newBudgetEstimated" placeholder="Estimé €">
             <input type="number" id="newBudgetPaid" placeholder="Payé €">
             <button class="btn btn-primary" id="addBudgetBtn">Ajouter</button>
@@ -1474,6 +1474,15 @@
   function populateBudgetCategorySelect() {
     const sel = document.getElementById('newBudgetCategory');
     sel.innerHTML = BUDGET_CATEGORIES.map(c => `<option>${escapeHtml(c)}</option>`).join('');
+    toggleBudgetLabelField();
+    sel.addEventListener('change', toggleBudgetLabelField);
+  }
+  function toggleBudgetLabelField() {
+    const sel = document.getElementById('newBudgetCategory');
+    const labelEl = document.getElementById('newBudgetLabel');
+    const isDivers = sel.value === 'Divers';
+    labelEl.style.display = isDivers ? '' : 'none';
+    if (!isDivers) labelEl.value = '';
   }
 
   function renderBudget() {
@@ -1508,16 +1517,16 @@
       const rows = state.budgetLines.slice().sort((a,b) => a.category.localeCompare(b.category));
       tableEl.innerHTML = `
         <div class="row head">
-          <span>Poste</span><span>Catégorie</span><span class="num">Estimé</span><span class="num">Payé</span><span class="num">Reste</span><span></span>
+          <span>Poste</span><span class="num">Estimé</span><span class="num">Payé</span><span class="num">Reste</span><span></span>
         </div>
       ` + rows.map(l => {
         const est = Number(l.estimated) || 0;
         const paid = Number(l.paid) || 0;
         const rest = est - paid;
+        const detail = l.category === 'Divers' && l.label && l.label !== l.category ? ` — ${escapeHtml(l.label)}` : '';
         return `
         <div class="row" data-id="${l.id}">
-          <span>${escapeHtml(l.label)}</span>
-          <span class="cat-name"><span class="cat-dot" style="background:${catColor(l.category)}"></span>${escapeHtml(l.category)}</span>
+          <span class="cat-name"><span class="cat-dot" style="background:${catColor(l.category)}"></span>${escapeHtml(l.category)}${detail}</span>
           <span class="num">${est.toLocaleString('fr-FR')} €</span>
           <span class="num">${paid.toLocaleString('fr-FR')} €</span>
           <span class="num remaining ${rest < 0 ? 'neg' : ''}">${rest.toLocaleString('fr-FR')} €</span>
@@ -1593,10 +1602,11 @@
   document.getElementById('addBudgetBtn').addEventListener('click', addBudgetLineFromForm);
   document.getElementById('newBudgetLabel').addEventListener('keydown', (e) => { if (e.key === 'Enter') addBudgetLineFromForm(); });
   async function addBudgetLineFromForm() {
-    const labelEl = document.getElementById('newBudgetLabel');
-    const label = labelEl.value.trim();
-    if (!label) return;
     const category = document.getElementById('newBudgetCategory').value;
+    const labelEl = document.getElementById('newBudgetLabel');
+    const customLabel = labelEl.value.trim();
+    if (category === 'Divers' && !customLabel) { showToast('Précisez de quoi il s\'agit'); return; }
+    const label = category === 'Divers' ? customLabel : category;
     const estimated = document.getElementById('newBudgetEstimated').value;
     const paid = document.getElementById('newBudgetPaid').value;
     state.budgetLines.push({ id: uid(), label, category, estimated: estimated || 0, paid: paid || 0 });
