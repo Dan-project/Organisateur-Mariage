@@ -445,9 +445,16 @@
   .cal-header {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 10px;
   }
   .cal-header h2 { font-size: 20px; }
-  .cal-nav { display: flex; gap: 6px; }
+  .cal-nav { display: flex; gap: 6px; flex-shrink: 0; }
+  .cal-nav .btn {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
   .cal-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -470,6 +477,7 @@
     flex-direction: column;
     gap: 3px;
     min-height: 64px;
+    touch-action: manipulation;
   }
   .cal-day:hover { border-color: var(--ink-faint); }
   .cal-day.other-month { opacity: 0.35; }
@@ -561,22 +569,77 @@
     color: var(--ink-faint); font-size: 14px; z-index: 300;
   }
 
+  .lock-screen {
+    position: fixed; inset: 0; background: var(--bg);
+    display: none; align-items: center; justify-content: center;
+    z-index: 300; padding: 20px;
+  }
+  .lock-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 32px;
+    width: 100%; max-width: 340px;
+    box-shadow: var(--shadow);
+    text-align: center;
+  }
+  .lock-box .mark { font-family: 'Fraunces', serif; font-style: italic; font-size: 24px; color: var(--wine); margin-bottom: 6px; }
+  .lock-box p { font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
+  .lock-box input {
+    width: 100%;
+    font-family: inherit; font-size: 14px;
+    padding: 10px 12px; border-radius: 4px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg); color: var(--ink);
+    margin-bottom: 12px;
+  }
+  .lock-box .btn-primary { width: 100%; padding: 10px; }
+  .lock-box .lock-error { color: var(--danger); font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+
   @media (max-width: 820px) {
     .app { flex-direction: column; }
     .sidebar { width: 100%; flex-direction: row; align-items: center; flex-wrap: wrap; padding: 16px; gap: 14px; }
     .brand { flex-direction: row; align-items: baseline; gap: 8px; }
     .countdown { display: none; }
     nav.tabs { flex-direction: row; flex-wrap: wrap; }
-    .sidebar-footer { display: none; }
+    .sidebar-footer { width: 100%; order: 99; font-size: 11px; padding-top: 10px; border-top: 1px solid var(--border); }
     main { padding: 24px 18px; }
     .stat-grid { grid-template-columns: 1fr 1fr; }
     .overview-columns { grid-template-columns: 1fr; }
+
+    .cal-header { justify-content: center; text-align: center; }
+    .cal-nav { width: 100%; justify-content: center; }
+    .cal-nav .btn { flex: 1; }
+    .cal-grid { gap: 4px; }
+    .cal-day { min-height: 46px; padding: 4px; gap: 1px; }
+    .cal-day .daynum { font-size: 12px; }
+    .cal-day .restrict-label { display: none; }
+    .cal-legend { font-size: 11.5px; gap: 10px; }
+  }
+
+  @media (max-width: 420px) {
+    .cal-grid { gap: 3px; }
+    .cal-day { min-height: 38px; padding: 3px; border-radius: 4px; }
+    .cal-day .daynum { font-size: 11px; }
+    .dot { width: 5px; height: 5px; }
   }
 </style>
 </head>
 <body>
 
 <div class="loading-screen" id="loadingScreen">Chargement de votre organisation…</div>
+
+<div class="lock-screen" id="lockScreen">
+  <div class="lock-box">
+    <div class="mark">Eden &amp; Dan</div>
+    <p>Ce site est privé. Entrez le mot de passe partagé pour continuer.</p>
+    <form id="lockForm">
+      <input type="password" id="lockPassword" placeholder="Mot de passe" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-primary" id="lockSubmitBtn">Entrer</button>
+      <div class="lock-error" id="lockError"></div>
+    </form>
+  </div>
+</div>
 
 <div class="app" id="app" style="display:none;">
   <aside class="sidebar">
@@ -974,11 +1037,10 @@
     appId: "1:84950317951:web:01b290467d1e0a730bb84a",
     measurementId: "G-SQ734SVEF0"
   };
-
-
-
-  
   const FIREBASE_SDK_VERSION = "10.14.1";
+  // Identifiant technique du compte partagé (voir README.md) — vous et votre
+  // fiancé·e n'avez qu'un mot de passe à retenir, pas cet email.
+  const SITE_LOGIN_EMAIL = "acces@mariage-eden-dan.app";
 
   const DEFAULT_STATE = {
     weddingDate: null,
@@ -999,6 +1061,13 @@
     const el = document.getElementById('connStatus');
     if (el) el.textContent = text;
   }
+  function showLockScreen() {
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('lockScreen').style.display = 'flex';
+  }
+  function hideLockScreen() {
+    document.getElementById('lockScreen').style.display = 'none';
+  }
 
   async function initFirebase() {
     if (firebaseConfig.apiKey === "REMPLACER_MOI") {
@@ -1012,31 +1081,61 @@
       const base = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/`;
       const { initializeApp } = await import(base + "firebase-app.js");
       const { getFirestore, doc, onSnapshot, setDoc, updateDoc } = await import(base + "firebase-firestore.js");
-      const { getAuth, signInAnonymously } = await import(base + "firebase-auth.js");
+      const { getAuth, onAuthStateChanged, signInWithEmailAndPassword } = await import(base + "firebase-auth.js");
 
       const app = initializeApp(firebaseConfig);
-      await signInAnonymously(getAuth(app));
-
+      const auth = getAuth(app);
       const firestore = getFirestore(app);
       const ref = doc(firestore, "wedding", "state");
-      fsDocRef = ref;
-      fsUpdateDoc = (partial) => updateDoc(ref, partial);
-      firebaseReady = true;
 
-      let gotFirst = false;
-      onSnapshot(ref, async (snap) => {
-        if (snap.exists()) {
-          state = { ...DEFAULT_STATE, ...snap.data() };
-        } else {
-          state = { ...DEFAULT_STATE };
-          try { await setDoc(ref, DEFAULT_STATE, { merge: true }); } catch (e) { console.error(e); }
+      function subscribeToData() {
+        if (firebaseReady) return;
+        firebaseReady = true;
+        fsDocRef = ref;
+        fsUpdateDoc = (partial) => updateDoc(ref, partial);
+
+        let gotFirst = false;
+        onSnapshot(ref, async (snap) => {
+          if (snap.exists()) {
+            state = { ...DEFAULT_STATE, ...snap.data() };
+          } else {
+            state = { ...DEFAULT_STATE };
+            try { await setDoc(ref, DEFAULT_STATE, { merge: true }); } catch (e) { console.error(e); }
+          }
+          setConnStatus("Connecté — vos modifications sont visibles instantanément par vous deux.");
+          if (!gotFirst) { gotFirst = true; firstSnapshotResolve(); }
+          else { renderAll(); }
+        }, (err) => {
+          console.error("Erreur de synchronisation", err);
+          setConnStatus("Connexion perdue — vos derniers changements peuvent ne pas être sauvegardés.");
+        });
+      }
+
+      document.getElementById('lockForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pwEl = document.getElementById('lockPassword');
+        const errEl = document.getElementById('lockError');
+        const btnEl = document.getElementById('lockSubmitBtn');
+        errEl.textContent = '';
+        btnEl.disabled = true;
+        try {
+          await signInWithEmailAndPassword(auth, SITE_LOGIN_EMAIL, pwEl.value);
+          pwEl.value = '';
+        } catch (err) {
+          console.error(err);
+          errEl.textContent = 'Mot de passe incorrect.';
+        } finally {
+          btnEl.disabled = false;
         }
-        setConnStatus("Connecté — vos modifications sont visibles instantanément par vous deux.");
-        if (!gotFirst) { gotFirst = true; firstSnapshotResolve(); }
-        else { renderAll(); }
-      }, (err) => {
-        console.error("Erreur de synchronisation", err);
-        setConnStatus("Connexion perdue — vos derniers changements peuvent ne pas être sauvegardés.");
+      });
+
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          hideLockScreen();
+          subscribeToData();
+        } else {
+          showLockScreen();
+        }
       });
     } catch (e) {
       console.error("Erreur d'initialisation Firebase", e);
