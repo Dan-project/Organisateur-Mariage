@@ -1081,7 +1081,7 @@
       const base = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}/`;
       const { initializeApp } = await import(base + "firebase-app.js");
       const { getFirestore, doc, onSnapshot, setDoc, updateDoc } = await import(base + "firebase-firestore.js");
-      const { getAuth, onAuthStateChanged, signInWithEmailAndPassword } = await import(base + "firebase-auth.js");
+      const { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } = await import(base + "firebase-auth.js");
 
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);
@@ -1130,6 +1130,14 @@
       });
 
       onAuthStateChanged(auth, (user) => {
+        // Une session anonyme d'avant la mise en place du mot de passe ne
+        // doit jamais compter comme "connecté" — on la ferme et on affiche
+        // quand même l'écran de mot de passe.
+        if (user && user.isAnonymous) {
+          signOut(auth).catch(() => {});
+          showLockScreen();
+          return;
+        }
         if (user) {
           hideLockScreen();
           subscribeToData();
