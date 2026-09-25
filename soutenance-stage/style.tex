@@ -1,0 +1,228 @@
+% ======================================================================
+%  style.tex -- Thème de la présentation (couleurs, polices, gabarits)
+%  Chargé par main.tex avec \input{style}.
+%  Couleur principale : primaryblue, la même que dans le rapport.
+% ======================================================================
+
+% ---------------------------------------------------------------------
+%  Encodage et langue
+% ---------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+
+% ---------------------------------------------------------------------
+%  Polices : Fira Sans si elle est installée (Overleaf, TeX Live complet),
+%  sinon Latin Modern. Les formules restent en police à empattements.
+% ---------------------------------------------------------------------
+\IfFileExists{FiraSans.sty}{\usepackage[sfdefault]{FiraSans}}{\usepackage{lmodern}}
+\usefonttheme[onlymath]{serif}
+
+% ---------------------------------------------------------------------
+%  Paquets
+% ---------------------------------------------------------------------
+\usepackage{graphicx}
+\usepackage{adjustbox}   % \adjincludegraphics : recadrage des images en % de leur taille
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{pifont}      % symboles coche / croix
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,raster}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,calc,fit,backgrounds,babel}
+
+% Images : même dossier "Images" que le rapport (à côté de main.tex,
+% ou un niveau au-dessus si la présentation est un sous-dossier du rapport)
+\graphicspath{{Images/}{../Images/}}
+
+% ---------------------------------------------------------------------
+%  Couleurs
+% ---------------------------------------------------------------------
+\definecolor{primaryblue}{RGB}{20,60,110}   % bleu du rapport
+\definecolor{accent}{RGB}{230,115,25}       % orange de mise en valeur
+\definecolor{softblue}{RGB}{233,239,247}    % fond clair
+\definecolor{textgray}{RGB}{100,100,100}    % gris du rapport
+\definecolor{okgreen}{RGB}{40,140,80}
+\definecolor{kored}{RGB}{200,45,45}
+% Classes sémantiques (mêmes codes couleur que les cartes du rapport)
+\definecolor{cRoute}{RGB}{40,40,40}
+\definecolor{cBati}{RGB}{215,50,50}
+\definecolor{cVege}{RGB}{50,150,60}
+\definecolor{cAutre}{RGB}{150,150,150}
+\definecolor{cVoiture}{RGB}{105,70,200}
+\definecolor{cCiel}{RGB}{110,170,230}
+% Facteurs de LIO-SAM (mêmes couleurs que la figure liosam2.png)
+\definecolor{fIMU}{RGB}{238,134,48}
+\definecolor{fLidar}{RGB}{120,176,72}
+\definecolor{fGPS}{RGB}{214,190,40}
+\definecolor{fLoop}{RGB}{25,25,25}
+
+% ---------------------------------------------------------------------
+%  Réglages généraux Beamer
+% ---------------------------------------------------------------------
+\setbeamertemplate{navigation symbols}{}
+\hyphenpenalty=10000 \exhyphenpenalty=10000   % pas de césure sur les slides
+\setbeamersize{text margin left=0.9cm, text margin right=0.9cm}
+
+\setbeamercolor{normal text}{fg=black!85, bg=white}
+\setbeamercolor{structure}{fg=primaryblue}
+\setbeamercolor{alerted text}{fg=accent}
+\setbeamercolor{frametitle}{fg=white, bg=primaryblue}
+\setbeamercolor{title}{fg=primaryblue}
+\setbeamercolor{subtitle}{fg=textgray}
+\setbeamercolor{footline}{fg=textgray}
+\setbeamercolor{itemize item}{fg=accent}
+\setbeamercolor{itemize subitem}{fg=textgray}
+\setbeamercolor{enumerate item}{fg=accent}
+\setbeamercolor{block title}{fg=white, bg=primaryblue}
+\setbeamercolor{block body}{fg=black!85, bg=softblue}
+
+\setbeamerfont{frametitle}{size=\large, series=\bfseries}
+\setbeamerfont{title}{size=\LARGE, series=\bfseries}
+\setbeamerfont{subtitle}{size=\normalsize}
+\setbeamerfont{footline}{size=\tiny}
+\setbeamerfont{alerted text}{series=\bfseries}
+\setbeamerfont{itemize/enumerate subbody}{size=\small}
+
+\setbeamertemplate{itemize item}[square]
+\setbeamertemplate{itemize subitem}{\textendash}
+\setbeamertemplate{enumerate item}{\textbf{\insertenumlabel.}}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+
+% ---------------------------------------------------------------------
+%  Barre de titre (pleine largeur) + barre de progression orange
+% ---------------------------------------------------------------------
+\makeatletter
+\newlength{\pb@longueur}
+\newcommand{\pb@barre}{%
+  \setlength{\pb@longueur}{\paperwidth}%
+  \ifnum\c@framenumber<\insertmainframenumber\relax
+    \setlength{\pb@longueur}{\dimexpr\paperwidth*\c@framenumber/\insertmainframenumber\relax}%
+  \fi
+  \hbox{{\color{accent}\rule{\pb@longueur}{1.8pt}}%
+        {\color{softblue}\rule{\dimexpr\paperwidth-\pb@longueur\relax}{1.8pt}}}%
+}
+\setbeamertemplate{frametitle}{%
+  \nointerlineskip%
+  \begin{beamercolorbox}[wd=\paperwidth, sep=0pt, leftskip=0.9cm, rightskip=0.9cm]{frametitle}%
+    \usebeamerfont{frametitle}\rule{0pt}{2.9ex}\insertframetitle\rule[-1.5ex]{0pt}{0pt}%
+  \end{beamercolorbox}%
+  \nointerlineskip%
+  \pb@barre%
+}
+
+% ---------------------------------------------------------------------
+%  Pied de page : auteur | titre court ............ numéro / total
+% ---------------------------------------------------------------------
+\setbeamertemplate{footline}{%
+  \leavevmode%
+  \hbox to \paperwidth{%
+    \hspace*{0.9cm}%
+    \usebeamerfont{footline}\usebeamercolor[fg]{footline}%
+    \insertshortauthor\hspace{0.6em}\textbar\hspace{0.6em}\insertshorttitle%
+    \hfill%
+    \ifbeamer@inappendix Annexe\else\insertframenumber\,/\,\insertmainframenumber\fi%
+    \hspace*{0.9cm}}%
+  \vspace*{0.28cm}%
+}
+\makeatother
+
+% ---------------------------------------------------------------------
+%  Page de titre
+%  (logos : logo_etablissement.png à gauche, logo_labo.png à droite)
+% ---------------------------------------------------------------------
+\newcommand{\typedocument}{}   % défini dans main.tex
+\setbeamertemplate{title page}{%
+  \hbox to \textwidth{%
+    \adjincludegraphics[height=1.05cm, trim={{0.04\width} {0.31\height} {0.04\width} {0.31\height}}, clip]{logo_etablissement.png}%
+    \hfill
+    \includegraphics[height=1.05cm]{logo_labo.png}}%
+  \vspace{0.6cm}
+  {\small\color{textgray}\typedocument\par}
+  \vspace{0.2cm}
+  {\usebeamerfont{title}\usebeamercolor[fg]{title}\inserttitle\par}
+  \vspace{0.15cm}
+  {\color{accent}\rule{2.6cm}{2pt}\par}
+  \vspace{0.15cm}
+  {\usebeamerfont{subtitle}\usebeamercolor[fg]{subtitle}\insertsubtitle\par}
+  \vspace{0.45cm}
+  {\large\bfseries\insertauthor\par}
+  \vspace{0.1cm}
+  {\footnotesize\color{textgray}\insertinstitute\par}
+  \vspace{0.1cm}
+  {\footnotesize\color{textgray}\insertdate\par}
+}
+
+% ---------------------------------------------------------------------
+%  Plan : numéros dans des pastilles orange
+% ---------------------------------------------------------------------
+\setbeamertemplate{section in toc}{%
+  \leavevmode\tikz[baseline=(n.base)]\node[fill=accent, text=white, rounded corners=2pt,
+    inner sep=2.5pt, minimum width=1.4em, font=\small\bfseries] (n) {\inserttocsectionnumber};%
+  \hspace{0.6em}{\color{primaryblue}\inserttocsection}\par}
+\setbeamertemplate{subsection in toc}{}
+
+% ---------------------------------------------------------------------
+%  Page d'intercalaire au début de chaque partie
+% ---------------------------------------------------------------------
+\setbeamertemplate{section page}{%
+  \begin{minipage}{0.8\textwidth}
+    \raggedright
+    {\fontsize{40}{40}\selectfont\bfseries\color{accent}%
+      \ifnum\value{section}<10 0\fi\arabic{section}\par}
+    \vspace{0.3cm}
+    {\LARGE\bfseries\color{primaryblue}\insertsectionhead\par}
+    \vspace{0.35cm}
+    {\color{accent}\rule{3cm}{2pt}\par}
+  \end{minipage}%
+}
+\AtBeginSection[]{%
+  \begin{frame}[plain, noframenumbering]
+    \vfill\sectionpage\vfill
+  \end{frame}
+}
+
+% ---------------------------------------------------------------------
+%  Petites commandes utiles
+% ---------------------------------------------------------------------
+\newcommand{\ok}{\textcolor{okgreen}{\ding{51}}}        % coche verte
+\newcommand{\ko}{\textcolor{kored}{\ding{55}}}          % croix rouge
+\newcommand{\legende}[1]{{\scriptsize\color{textgray}#1\par}}
+
+% Carte (encadré) réutilisable : \begin{tcolorbox}[carte, title=...]
+\tcbset{
+  carte/.style={enhanced, colback=softblue, colframe=primaryblue, boxrule=0.6pt, arc=4pt,
+    colbacktitle=primaryblue, coltitle=white, fonttitle=\bfseries\small, halign title=center,
+    fontupper=\small, halign=center, valign=center, left=4pt, right=4pt, top=5pt, bottom=5pt},
+  question/.style={enhanced, colback=white, colframe=accent, boxrule=1pt, arc=4pt,
+    fontupper=\normalsize, halign=center, left=6pt, right=6pt, top=4pt, bottom=4pt},
+}
+
+% ---------------------------------------------------------------------
+%  Styles TikZ communs aux schémas
+% ---------------------------------------------------------------------
+\tikzset{
+  >={Latex[length=2mm]},
+  boite/.style={draw=primaryblue, fill=white, rounded corners=3pt, align=center,
+    font=\scriptsize, inner sep=3pt, minimum height=0.8cm, text width=#1},
+  boite/.default=2cm,
+  capteur/.style={draw=primaryblue!60, fill=softblue, align=center,
+    font=\scriptsize, inner sep=3pt, minimum height=0.7cm, text width=#1},
+  capteur/.default=1.5cm,
+  donnee/.style={draw=accent, fill=accent!10, rounded corners=3pt, align=center,
+    font=\scriptsize, inner sep=3pt, minimum height=0.8cm, text width=#1},
+  donnee/.default=2cm,
+  sortie/.style={draw=accent, fill=accent, text=white, rounded corners=3pt, align=center,
+    font=\scriptsize\bfseries, inner sep=3pt, minimum height=0.8cm, text width=#1},
+  sortie/.default=2cm,
+  fleche/.style={->, thick, draw=primaryblue!80},
+  groupe/.style={draw=primaryblue!45, dashed, rounded corners=6pt, inner sep=5pt},
+}
+
+% Facteur de LIO-SAM : \facteur{couleur}{nom}{description}
+\newcommand{\facteur}[3]{%
+  \begin{tabular}{@{}c@{}}
+    \tikz[baseline=-0.6ex]{\draw[#1, line width=1.8pt] (0,0) -- (0.55,0); \fill[#1] (0.275,0) circle (2.4pt);}\
+    \textbf{\small #2}\\[-1pt]
+    {\scriptsize\color{textgray}#3}
+  \end{tabular}}

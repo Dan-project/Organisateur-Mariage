@@ -1,0 +1,301 @@
+% ======================================================================
+%  PARTIE 4 -- Framework de fusion LiDAR-caméra              (~4 min)
+% ======================================================================
+\section{Framework de fusion LiDAR--caméra}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - C'est le cœur du travail : un framework ROS 2 qui combine la
+%    localisation géométrique de LIO et la segmentation sémantique de
+%    YOLO pour construire une carte sémantique.
+%  - Deux parties bien distinctes (distinction qui sera essentielle pour
+%    le multi-robots) :
+%      1. Étiquetage des points, à chaque trame : synchronisation image /
+%         LiDAR, projection des points LiDAR dans l'image, segmentation
+%         YOLO, association d'un label à chaque point ; les trames
+%         étiquetées sont mises en file d'attente.
+%      2. Repère monde et carte : grâce à l'odométrie de LIO, chaque trame
+%         est placée dans le repère monde, les points sont accumulés, puis
+%         discrétisés en carte 2D / 3D exportée en GeoJSON.
+%  - Objectif ANR-SOS : une brique embarquée, identique sur le Scout et
+%    le Ranger (seules les calibrations changent).
+% ----------------------------------------------------------------------
+\begin{frame}{Architecture du nœud de fusion}
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    % Partie 1 : étiquetage des points
+    \node[capteur=1.5cm] (img)   at (0,1.95)    {Topic image};
+    \node[capteur=1.5cm] (lid)   at (0,0.95)    {Topic LiDAR};
+    \node[boite=2.1cm]   (sync)  at (2.35,1.45) {Synchronisation\\ temporelle};
+    \node[boite=1.95cm]  (proj)  at (4.7,1.95)  {Projection\\ géométrique};
+    \node[boite=1.95cm]  (yolo)  at (4.7,0.95)  {Segmentation\\ YOLO};
+    \node[boite=1.85cm]  (assoc) at (7.0,1.45)  {Association\\ sémantique};
+    \node[donnee=2.0cm]  (queue) at (9.3,1.45)  {File d'attente\\ {\tiny points + labels + t}};
+    % Partie 2 : repère monde et carte
+    \node[capteur=1.5cm] (odom)   at (0,-0.85)    {Topic\\ odométrie LIO};
+    \node[boite=2.3cm]   (interp) at (4.7,-0.85)  {Historique +\\ interpolation de pose};
+    \node[boite=2.0cm]   (monde)  at (9.3,-0.85)  {Transformation\\ repère monde};
+    \node[sortie=2.1cm]  (carte)  at (11.8,-0.85) {Carte sémantique\\ {\tiny\mdseries 2D / 3D, GeoJSON}};
+    % Flèches
+    \draw[fleche] (img.east) -- ++(0.25,0) |- (sync.west);
+    \draw[fleche] (lid.east) -- ++(0.25,0) |- (sync.west);
+    \draw[fleche] (sync.east) -- ++(0.2,0) |- (proj.west);
+    \draw[fleche] (sync.east) -- ++(0.2,0) |- (yolo.west);
+    \draw[fleche] (proj.east) -- ++(0.2,0) |- (assoc.west);
+    \draw[fleche] (yolo.east) -- ++(0.2,0) |- (assoc.west);
+    \draw[fleche] (assoc) -- (queue);
+    \draw[fleche] (queue) -- (monde);
+    \draw[fleche] (odom) -- (interp);
+    \draw[fleche] (interp) -- (monde);
+    \draw[fleche] (monde) -- (carte);
+    % Groupes
+    \begin{scope}[on background layer]
+      \node[groupe, fit=(img)(lid)(sync)(proj)(yolo)(assoc)(queue)] (g1) {};
+      \node[groupe, draw=accent!70, fit=(odom)(interp)(monde)(carte)] (g2) {};
+    \end{scope}
+    \node[anchor=south west, font=\scriptsize\bfseries, text=primaryblue] at (g1.north west) {1. Étiquetage des points \mdseries(à chaque trame)};
+    \node[anchor=north west, font=\scriptsize\bfseries, text=accent] at (g2.south west) {2. Repère monde et génération de la carte};
+  \end{tikzpicture}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - Synchronisation : les flux image et LiDAR n'arrivent ni au même
+%    instant ni à la même fréquence -> ApproximateTimeSynchronizer
+%    (message_filters) apparie les messages dont les horodatages sont
+%    proches (écart max 50 ms). En plus, une fréquence cible : les paires
+%    reçues trop tôt sont ignorées pour ne pas accumuler de retard.
+%  - Projection en deux produits matriciels, en coordonnées homogènes :
+%      * matrice extrinsèque [R|t] : du repère LiDAR au repère optique de
+%        la caméra ; dépend du montage physique -> propre à chaque robot ;
+%      * matrice intrinsèque K : paramètres internes de la caméra et
+%        résolution (lue sur le topic camera_info).
+%    -> pour chaque point : un pixel (u, v) et une profondeur z_c.
+%    Les deux matrices sont déterminées une fois par robot et chargées en
+%    paramètres au démarrage du nœud.
+%  - Trois filtres : profondeur <= 0 (derrière la caméra), pixel hors de
+%    l'image (hors champ de vision), distance > portée max (points
+%    lointains, moins fiables pour l'association).
+% ----------------------------------------------------------------------
+\begin{frame}{Projection des points LiDAR dans l'image}
+  \begin{columns}[c]
+    \begin{column}{0.5\textwidth}
+      \[
+        z_c \begin{pmatrix} u\\ v\\ 1 \end{pmatrix}
+        = \underbrace{K}_{\text{intrinsèque}}\;
+          \underbrace{[\,R \mid t\,]}_{\text{extrinsèque}}
+          \begin{pmatrix} X\\ Y\\ Z\\ 1 \end{pmatrix}_{\!\text{LiDAR}}
+      \]
+      \vspace{-0.1cm}
+      \begin{itemize}
+        \item $K$ : caméra {\footnotesize\color{textgray}(topic \texttt{camera\_info})}
+        \item $[R \mid t]$ : LiDAR $\rightarrow$ caméra, \alert{propre à chaque robot}
+        \item \textbf{3 filtres} : $z_c > 0$, \ $(u,v)$ dans l'image, \ distance $<$ portée max
+        \item Synchronisation image / LiDAR\\
+              {\footnotesize\color{textgray}\texttt{ApproximateTimeSynchronizer}, $\Delta t \leq 50$ ms}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \centering
+      \begin{tikzpicture}[font=\scriptsize]
+        % champ de vision (demi-angle 24°) limité à la portée max (rayon 4,2)
+        \fill[softblue] (0,0) -- (3.837,1.708) arc[start angle=24, end angle=-24, radius=4.2] -- cycle;
+        \draw[primaryblue!40] (0,0) -- (3.837,1.708);
+        \draw[primaryblue!40] (0,0) -- (3.837,-1.708);
+        \draw[primaryblue!50, dashed] (3.837,1.708) arc[start angle=24, end angle=-24, radius=4.2];
+        \node[text=textgray, font=\tiny, anchor=north] at (3.837,-1.75) {portée max};
+        \draw[gray, dashed] (0,0) -- (4.55,0) node[right, font=\tiny] {$z_c$};
+        % plan image
+        \draw[very thick, primaryblue] (1,-0.445) -- (1,0.445);
+        \node[text=primaryblue, font=\tiny, anchor=south] at (1,0.47) {image};
+        % caméra et LiDAR
+        \fill[primaryblue] (0,0) circle (2.2pt);
+        \node[anchor=east, font=\scriptsize] at (-0.08,0.12) {caméra};
+        \node[draw=primaryblue, fill=white, rounded corners=1pt, minimum width=0.5cm, minimum height=0.3cm] (L) at (-0.5,-1.35) {};
+        \node[anchor=north, font=\scriptsize] at (L.south) {LiDAR};
+        \draw[->, thick, accent] (L.north) -- node[left, font=\scriptsize] {$[R \mid t]$} (-0.05,-0.08);
+        % point valide et sa projection sur le plan image
+        \draw[accent, densely dotted, thick] (0,0) -- (3.1,0.8);
+        \fill[accent] (3.1,0.8) circle (2.3pt) node[above right=-1pt] {\ok};
+        \fill[accent] (1,0.258) circle (1.8pt);
+        \node[anchor=south east, font=\tiny] at (0.97,0.27) {$(u,v)$};
+        % points rejetés
+        \fill[kored] (1.9,1.5) circle (2.2pt) node[right] {\ko\ hors image};
+        \fill[kored] (4.45,-0.6) circle (2.2pt) node[below] {\ko\ trop loin};
+        \fill[kored] (-0.9,0.75) circle (2.2pt) node[above] {\ko\ $z_c \leq 0$};
+      \end{tikzpicture}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~30 s)
+%  - En parallèle, l'image passe dans YOLO (nano, segmentation
+%    sémantique) -> un masque qui associe une classe à chaque pixel.
+%  - L'association consiste simplement à lire, pour chaque point LiDAR
+%    valide, la valeur du masque au pixel (u, v), puis à convertir cet
+%    identifiant en nom de classe.
+%  - C'est ça, la fusion : chaque point garde sa position 3D précise
+%    (LiDAR) et hérite d'un label sémantique (caméra).
+%  - Affichage OpenCV en temps réel : masque sémantique superposé à
+%    l'image + points LiDAR projetés (couleur selon la distance) +
+%    légende des classes. Il ne sert pas au calcul de la carte, mais
+%    permet de vérifier en direct la calibration et l'association.
+% ----------------------------------------------------------------------
+\begin{frame}{Association sémantique}
+  \centering
+  {\small pixel $(u,v)$ $\rightarrow$ label du masque YOLO
+   \quad$\Rightarrow$\quad point = \alert{position 3D} (LiDAR) + \alert{label} (caméra)\par}
+  \vspace{0.3cm}
+  \begin{tabular}{@{}c@{\hspace{0.35cm}}c@{}}
+    \includegraphics[height=3.9cm]{points.png} &
+    \includegraphics[height=3.9cm]{opencv_ranger.png} \\[1pt]
+    \legende{Scout Mini -- parking du bâtiment ESPRIT} &
+    \legende{Ranger} \\
+  \end{tabular}\par
+  \vspace{0.2cm}
+  {\small Affichage \alert{OpenCV} temps réel : contrôle visuel de la \alert{calibration}\par}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - Pour placer les points dans le repère monde, il faut la pose du
+%    robot à l'instant exact de chaque trame.
+%  - Deux options : l'arbre de transformations ROS (TF) ou le topic
+%    d'odométrie de LIO. TF est plus coûteux (chaque recherche parcourt
+%    l'arbre odom -> base_link -> lidar_link...) -> choix du topic
+%    d'odométrie, et le nœud reconstitue lui-même la pose.
+%  - L'odométrie arrive indépendamment des trames : on garde un
+%    historique ; une trame n'est traitée que si l'historique couvre déjà
+%    son horodatage, sinon elle attend dans une file d'attente bornée
+%    (ordre temporel garanti, mémoire maîtrisée).
+%  - Interpolation entre les deux odométries qui encadrent la trame :
+%    linéaire pour la position, sphérique (slerp) pour l'orientation
+%    (quaternion), avec SciPy. La pose obtenue transforme les points du
+%    repère LiDAR vers le repère monde.
+% ----------------------------------------------------------------------
+\begin{frame}{Passage dans le repère monde}
+  \begin{columns}[c]
+    \begin{column}{0.45\textwidth}
+      \begin{itemize}
+        \item Pose du robot à l'instant \alert{exact} de chaque trame
+        \item TF {\footnotesize(coûteux)} $\rightarrow$ \alert{topic odométrie} de LIO
+        \item Historique des odométries\\ + \alert{file d'attente} bornée
+        \item Interpolation :\\ \alert{lerp} (position), \alert{slerp} (orientation)
+      \end{itemize}
+      \vspace{0.15cm}
+      \centering
+      $P_{\text{monde}} = R(t)\,P_{\text{LiDAR}} + T(t)$
+    \end{column}
+    \begin{column}{0.53\textwidth}
+      \centering
+      \begin{tikzpicture}[font=\scriptsize]
+        \draw[->, thick, primaryblue!70] (-0.2,0) -- (6.4,0) node[right] {$t$};
+        % odométries LIO
+        \foreach \px in {0.3,1.5,2.7,3.9} {
+          \draw[primaryblue!35] (\px,0) -- (\px,0.5);
+          \node[diamond, fill=primaryblue, inner sep=1.7pt] at (\px,0.5) {};
+        }
+        % trames LiDAR + caméra
+        \foreach \px in {0.9,2.2,3.4} {
+          \draw[accent!40] (\px,0) -- (\px,-0.5);
+          \fill[accent] (\px,-0.5) circle (3pt);
+        }
+        \draw[accent!40] (5.0,0) -- (5.0,-0.5);
+        \filldraw[fill=white, draw=accent, thick] (5.0,-0.5) circle (3pt);
+        \node[below=3pt, text=accent, align=center] at (5.0,-0.5) {en attente\\ {\tiny(pas encore d'odométrie)}};
+        % interpolation de la trame en t
+        \node[above=3pt] at (1.5,0.5) {$t_0$};
+        \node[above=3pt] at (2.7,0.5) {$t_1$};
+        \node[below=3pt] at (2.2,-0.5) {$t$};
+        \draw[accent, thick, ->] (1.55,0.62) to[bend left=35] (2.12,-0.38);
+        \draw[accent, thick, ->] (2.65,0.62) to[bend right=35] (2.28,-0.38);
+        % légende
+        \node[diamond, fill=primaryblue, inner sep=1.7pt] at (0.3,-1.75) {};
+        \node[anchor=west] at (0.45,-1.75) {odométrie LIO};
+        \fill[accent] (3.0,-1.75) circle (3pt);
+        \node[anchor=west] at (3.15,-1.75) {trame LiDAR + caméra};
+      \end{tikzpicture}\par
+      \vspace{0.25cm}
+      {\small
+      $\alpha = \dfrac{t - t_0}{t_1 - t_0}$ \qquad
+      $\mathbf{p}(t) = (1-\alpha)\,\mathbf{p}_0 + \alpha\,\mathbf{p}_1$\\[4pt]
+      $q(t) = \operatorname{slerp}(q_0, q_1, \alpha)$\par}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - Une fois les points accumulés dans le repère monde, des fonctions
+%    "hors ligne" (déclenchées à l'arrêt du nœud) les transforment en
+%    carte exploitable. En multi-robots, elles tourneront périodiquement.
+%  - Carte 2D : grille de cases carrées (GeoPandas). Pour chaque case :
+%    le label dominant (le plus représenté parmi les points de la case),
+%    le pourcentage de points qui portent ce label (indicateur de
+%    confiance) et le temps d'acquisition (min et max).
+%  - Carte 3D : même principe avec des voxels, indexés par trois indices
+%    entiers calculés à partir de la position et du pas en x, y, z.
+%  - Deux informations en plus :
+%      * une confiance liée à la portée : un point mesuré près du LiDAR
+%        est plus fiable qu'un point mesuré à la portée max ;
+%      * un indice de traversabilité déduit du label dominant (table de
+%        correspondance, ex. route = très traversable) -- encore limitée
+%        à quelques labels ; piste : ajouter l'élévation.
+%  - Export GeoJSON : une case (ou un voxel) = une entité, avec son
+%    centre, son label et ses indicateurs.
+% ----------------------------------------------------------------------
+\begin{frame}{Génération de la carte sémantique}
+  \begin{columns}[c]
+    \begin{column}{0.5\textwidth}
+      \centering
+      \begin{tikzpicture}[font=\scriptsize]
+        % points étiquetés dans la grille
+        \foreach \px/\py/\coul in {
+            0.17/1.87/cVege, 0.53/1.91/cVege, 0.36/2.13/cVege, 0.17/2.37/cBati, 0.56/2.36/cVege,
+            1.02/1.87/cBati, 1.38/1.91/cBati, 1.21/2.13/cVege, 1.02/2.37/cBati, 1.41/2.36/cBati,
+            1.87/1.87/cBati, 2.23/1.91/cBati, 2.06/2.13/cBati, 1.87/2.37/cAutre, 2.26/2.36/cBati,
+            0.17/1.02/cRoute, 0.53/1.06/cRoute, 0.36/1.28/cAutre, 0.17/1.52/cRoute, 0.56/1.51/cRoute,
+            1.02/1.02/cRoute, 1.38/1.06/cRoute, 1.21/1.28/cRoute, 1.02/1.52/cRoute, 1.41/1.51/cAutre,
+            1.87/1.02/cAutre, 2.23/1.06/cAutre, 2.06/1.28/cRoute, 1.87/1.52/cAutre, 2.26/1.51/cBati,
+            0.17/0.17/cRoute, 0.53/0.21/cRoute, 0.36/0.43/cRoute, 0.17/0.67/cRoute, 0.56/0.66/cRoute,
+            1.02/0.17/cRoute, 1.38/0.21/cAutre, 1.21/0.43/cRoute, 1.02/0.67/cRoute, 1.41/0.66/cRoute,
+            1.87/0.17/cAutre, 2.23/0.21/cAutre, 2.06/0.43/cAutre, 1.87/0.67/cRoute, 2.26/0.66/cAutre} {
+          \fill[\coul] (\px,\py) circle (2pt);
+        }
+        \draw[step=0.85, gray!60] (0,0) grid (2.55,2.55);
+        \node[anchor=north] at (1.275,-0.1) {points étiquetés};
+        % flèche
+        \draw[fleche] (2.8,1.275) -- node[above, align=center] {label\\ dominant} (3.9,1.275);
+        % cases agrégées
+        \begin{scope}[xshift=4.15cm]
+          \foreach \ci/\cj/\coul in {0/2/cVege, 1/2/cBati, 2/2/cBati,
+                                0/1/cRoute, 1/1/cRoute, 2/1/cAutre,
+                                0/0/cRoute, 1/0/cRoute, 2/0/cAutre} {
+            \fill[\coul!75] (\ci*0.85,\cj*0.85) rectangle ++(0.85,0.85);
+          }
+          \draw[step=0.85, white, thick] (0,0) grid (2.55,2.55);
+          \node[text=white, font=\scriptsize\bfseries] at (1.275,1.275) {80\,\%};
+          \node[anchor=north] at (1.275,-0.1) {cases (ou voxels)};
+        \end{scope}
+        % légende des classes
+        \foreach \coul/\nom [count=\k] in {cRoute/route, cBati/bâtiment, cVege/végétation, cAutre/autre} {
+          \fill[\coul] ({(\k-1)*1.7},-1.0) rectangle ++(0.25,0.25);
+          \node[anchor=west, font=\tiny] at ({(\k-1)*1.7+0.3},-0.875) {\nom};
+        }
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.47\textwidth}
+      \begin{itemize}
+        \item Grille \alert{2D} ou voxels \alert{3D}
+        \item Par case : \alert{label dominant}\\
+              {\footnotesize\color{textgray} + \% (confiance), temps min/max}
+        \item Confiance $\searrow$ avec la \alert{distance}
+        \item \alert{Traversabilité}\\
+              {\footnotesize\color{textgray} table label $\rightarrow$ valeur}
+        \item Export \alert{GeoJSON}\\
+              {\footnotesize\color{textgray} 1 case = 1 entité}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}

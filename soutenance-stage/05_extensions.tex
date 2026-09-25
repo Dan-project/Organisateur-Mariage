@@ -1,0 +1,220 @@
+% ======================================================================
+%  PARTIE 5 -- Loop closure, carte a priori, multi-robots    (~3 min 10)
+% ======================================================================
+\section{Loop closure, carte a priori et multi-robots}
+
+% ----------------------------------------------------------------------
+% À DIRE (~40 s)
+%  - Rappel : une loop closure = reconnaître qu'on repasse par un endroit
+%    déjà visité, pour corriger la dérive accumulée sur TOUTE la
+%    trajectoire (pas seulement la partie récente).
+%  - La détection n'est pas faite par mon framework mais par LIO, qui
+%    publie ensuite ses résultats (contraintes + trajectoire corrigée).
+%  - Principe dans LIO :
+%      1. à chaque nouvelle keyframe, recherche par arbre 3D (kd-tree)
+%         des keyframes proches dans l'espace (rayon 15 m par défaut) ;
+%      2. on écarte celles trop proches dans le temps (< 30 s), pour ne
+%         pas "boucler" sur la trajectoire d'il y a quelques instants ;
+%      3. sous-cartes de 25 keyframes voisines autour de la pose courante
+%         et autour de la candidate, recalées par ICP ;
+%      4. si le score ICP passe sous le seuil (0,3) -> nouvelle contrainte
+%         dans le graphe -> optimisation globale.
+%  - Réglage = compromis : rayon trop grand / seuil trop permissif ->
+%    fausses boucles ; trop strict -> vraies boucles manquées.
+%    (Tableau des paramètres en annexe.)
+% ----------------------------------------------------------------------
+\begin{frame}{Loop closure : détection par LIO}
+  \begin{columns}[c]
+    \begin{column}{0.42\textwidth}
+      \centering
+      \begin{tikzpicture}[font=\scriptsize, scale=1.25]
+        % trajectoire estimée (avec dérive)
+        \draw[primaryblue, thick] plot[smooth, tension=0.6] coordinates
+          {(0,0) (1.2,-0.35) (2.6,-0.2) (3.4,0.6) (3.3,1.8) (2.2,2.5) (0.9,2.3) (0.15,1.5) (0.35,0.62)};
+        \foreach \px/\py in {1.2/-0.35, 2.6/-0.2, 3.4/0.6, 3.3/1.8, 2.2/2.5, 0.9/2.3} {
+          \filldraw[fill=white, draw=primaryblue] (\px,\py) circle (2.2pt);
+        }
+        % rayon de recherche autour de la pose courante
+        \draw[accent, dashed] (0.35,0.62) circle (1.0);
+        % keyframe récente, écartée
+        \filldraw[fill=gray!30, draw=gray] (0.15,1.5) circle (2.2pt);
+        \node[anchor=east, text=textgray, font=\tiny] at (0.05,1.55) {trop récente \ko};
+        % keyframe candidate (départ) et pose courante
+        \filldraw[fill=primaryblue, draw=primaryblue] (0,0) circle (2.8pt);
+        \node[anchor=north east, font=\tiny] at (-0.05,-0.05) {départ};
+        \filldraw[fill=accent, draw=accent] (0.35,0.62) circle (2.8pt);
+        \node[anchor=west, text=accent, font=\tiny\bfseries] at (0.5,0.75) {pose courante};
+        % contrainte de boucle
+        \draw[fLoop, very thick] (0.35,0.62) to[bend left=45] node[right=1pt, font=\tiny] {ICP} (0,0);
+        \draw[accent, thin] (0.35,0.62) -- (1.216,0.12);
+        \node[text=accent, font=\tiny, anchor=north west] at (1.1,0.22) {15 m};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.56\textwidth}
+      \begin{enumerate}
+        \item Nouvelle keyframe $\rightarrow$ recherche \alert{kd-tree}\\
+              {\footnotesize\color{textgray} keyframes proches dans l'espace (15 m)}
+        \item On écarte les keyframes \alert{trop récentes}\\
+              {\footnotesize\color{textgray} écart temporel $<$ 30 s}
+        \item Sous-cartes ($\pm$ 25 keyframes) $\rightarrow$ recalage \alert{ICP}
+        \item Score ICP $<$ 0,3 $\rightarrow$ \alert{nouveau facteur}\\
+              {\footnotesize\color{textgray} optimisation globale du graphe}
+      \end{enumerate}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - LIO corrige sa trajectoire, mais les points déjà placés dans ma
+%    carte sémantique, eux, ne bougent pas -> il faut répercuter la
+%    correction.
+%  - Deux abonnements en plus : les contraintes de loop closure publiées
+%    par LIO, et la trajectoire complète corrigée (topic path).
+%  - Détection : dès que le nombre de contraintes publiées augmente, une
+%    nouvelle boucle vient d'être intégrée par LIO.
+%  - Toutes les trames traitées depuis le début sont conservées sous
+%    forme brute (points filtrés + labels, avant passage au repère monde)
+%    dans un second stockage (pending_frames_until_loop).
+%  - Recalcul complet : chaque trame est retransformée dans le repère
+%    monde avec la trajectoire CORRIGÉE, interpolée de la même façon
+%    (lerp / slerp) -- interpolation d'autant plus nécessaire que la
+%    trajectoire corrigée ne contient que les keyframes. Le nouveau nuage
+%    remplace entièrement l'ancien. Le traitement courant continue en
+%    parallèle.
+%  - Test sur KITTI (loop closure forcée en réduisant le délai minimal,
+%    car le bag ne fait pas une vraie boucle) : ça fonctionne, mais on
+%    voit des trous = trames perdues. Le recalcul coûte de plus en plus
+%    cher avec le temps, et la voiture dépasse 50 km/h sur la ligne
+%    droite (les pertes commencent exactement là).
+%  - Conclusion : limiter la vitesse des robots et le délai avant
+%    transfert de la carte.
+% ----------------------------------------------------------------------
+\begin{frame}{Loop closure : mise à jour de la carte}
+  \begin{columns}[c]
+    \begin{column}{0.44\textwidth}
+      \centering
+      \begin{tikzpicture}[font=\scriptsize, node distance=0.42cm]
+        \node[capteur=4.4cm] (b1) {LIO : nouvelle contrainte de boucle\\ {\tiny(nombre de contraintes $\nearrow$)}};
+        \node[capteur=4.4cm, below=of b1] (b2) {Trajectoire \alert{corrigée} {\tiny(topic \texttt{path}, keyframes)}};
+        \node[boite=4.4cm, below=of b2] (b3) {Ré-interpolation de \alert{toutes} les trames stockées\\ {\tiny\texttt{pending\_frames\_until\_loop}}};
+        \node[sortie=4.4cm, below=of b3] (b4) {Nouveau nuage $\rightarrow$ remplace l'ancien};
+        \draw[fleche] (b1) -- (b2);
+        \draw[fleche] (b2) -- (b3);
+        \draw[fleche] (b3) -- (b4);
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.54\textwidth}
+      \centering
+      \includegraphics[width=\linewidth]{loop_kitti.png}
+      \legende{KITTI, loop closure forcée : les trous = trames perdues}
+      \vspace{0.25cm}
+      {\small \ko\ recalcul de plus en plus \alert{coûteux}\\
+       \ko\ vitesse $>$ 50 km/h $\rightarrow$ \alert{pertes}\par}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - Carte a priori = carte du terrain construite EN AMONT à partir de
+%    données existantes (OpenStreetMap), pas par le robot.
+%  - Deux rôles : référence de navigation disponible dès le démarrage, et
+%    vérité terrain pour évaluer la carte sémantique produite par le
+%    robot. À terme : réintégrée dans la cartographie elle-même.
+%  - Construction : extraction de la zone via Overpass Turbo au format
+%    GeoJSON, puis discrétisation en grille (GeoPandas, jointure spatiale
+%    sjoin entre la grille et les polygones OSM).
+%  - Problème : une case à cheval sur deux polygones (ex. bâtiment +
+%    forêt) donne deux entrées. Solution : pas de discrétisation fin
+%    (possible car la carte n'est chargée qu'une fois) + priorité entre
+%    labels (un obstacle "bâtiment" l'emporte sur une zone libre) ; les
+%    tags OSM sont aussi normalisés (ex. building=yes -> building).
+%  - Intégration dans le nœud : coordonnées Lambert-93 ramenées dans un
+%    repère local (on soustrait l'origine), puis position et cap initiaux
+%    du robot (rotation + décalage) pour superposer les deux cartes.
+%  - Limites : pas d'élévation ; pour l'instant, la carte a priori sert
+%    de fond de carte, elle n'est pas fusionnée dans le GeoJSON produit.
+% ----------------------------------------------------------------------
+\begin{frame}{Carte a priori (OpenStreetMap)}
+  \begin{columns}[c]
+    \begin{column}{0.56\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \node[inner sep=0pt] (z) at (0,0) {\includegraphics[height=3.5cm]{zone.png}};
+        \node[inner sep=0pt, anchor=west] (d) at ([xshift=0.8cm]z.east) {\includegraphics[height=3.5cm]{discretized-map.png}};
+        \draw[fleche, very thick] ([xshift=0.1cm]z.east) -- ([xshift=-0.1cm]d.west);
+        \node[anchor=north, font=\scriptsize, text=textgray] at (z.south) {Overpass Turbo};
+        \node[anchor=north, font=\scriptsize, text=textgray, align=center] at (d.south) {grille discrétisée};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \begin{itemize}
+        \item Rôles : \alert{référence} de navigation, \alert{vérité terrain}
+        \item OSM $\rightarrow$ GeoJSON $\rightarrow$ \alert{grille}\\
+              {\footnotesize\color{textgray} GeoPandas, jointure spatiale}
+        \item Case à cheval $\rightarrow$ \alert{priorité}\\
+              {\footnotesize\color{textgray} bâtiment $>$ route \dots}
+        \item Recalage : repère local\\
+              + \alert{position / cap initiaux}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ----------------------------------------------------------------------
+% À DIRE (~50 s)
+%  - Jusqu'ici : un seul nœud qui faisait tout, pour un seul robot.
+%    Objectif ANR-SOS : une carte sémantique unique, partagée, construite
+%    à partir de plusieurs robots.
+%  - Séparation en deux nœuds :
+%      * PerceptionNode, un par robot : toute la chaîne de fusion
+%        (synchro, projection avec la calibration du robot, YOLO,
+%        interpolation, loop closure), mais il ne construit plus de
+%        carte : il publie ses points déjà dans le repère monde sur
+%        /<robot>/semantic_points ;
+%      * MapFusionNode, une seule instance : s'abonne aux topics des
+%        robots déclarés (paramètre robots), accumule les points de tous
+%        les robots et génère la carte commune PÉRIODIQUEMENT (timer ROS 2,
+%        paramètre write_interval_sec), plus seulement à l'arrêt.
+%  - Message PointCloud2 : position, identifiant numérique du label (ce
+%    format n'accepte que des champs numériques, pas de chaînes), une
+%    confiance liée à la portée et l'horodatage. La table identifiant ->
+%    nom de classe est publiée une seule fois.
+%  - Nommage : chaque robot a son namespace (/scout/..., /ranger/...).
+%    Pour TF, deux options : un arbre TF séparé par robot (simple, mais
+%    plus aucun lien possible entre robots) ou préfixer les repères
+%    (scout/base_link) dans un arbre unique -> choix retenu, car il
+%    permettra plus tard de relier les repères des robots entre eux.
+% ----------------------------------------------------------------------
+\begin{frame}{Extension multi-robots}
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[capteur=2.2cm, minimum height=0.95cm] (s) at (0,1.05) {\textbf{Scout}\\ LiDAR, caméra, LIO};
+    \node[capteur=2.2cm, minimum height=0.95cm] (r) at (0,-1.05) {\textbf{Ranger}\\ LiDAR, caméra, LIO};
+    \node[boite=2.5cm, minimum height=0.95cm] (ps) at (3.35,1.05) {\texttt{PerceptionNode}\\ {\tiny un par robot}};
+    \node[boite=2.5cm, minimum height=0.95cm] (pr) at (3.35,-1.05) {\texttt{PerceptionNode}\\ {\tiny un par robot}};
+    \node[donnee=2.6cm, minimum height=1.3cm] (mf) at (8.3,0) {\texttt{MapFusionNode}\\ unique : agrégation\\ {\tiny carte générée périodiquement}};
+    \node[sortie=2.0cm, minimum height=0.95cm] (out) at (11.4,0) {Carte commune\\ {\tiny\mdseries GeoJSON}};
+    \draw[fleche] (s) -- (ps);
+    \draw[fleche] (r) -- (pr);
+    \draw[fleche] (ps.east) -| node[pos=0.3, above, font=\tiny\ttfamily] {/scout/semantic\_points} (mf.north);
+    \draw[fleche] (pr.east) -| node[pos=0.3, below, font=\tiny\ttfamily] {/ranger/semantic\_points} (mf.south);
+    \draw[fleche] (mf) -- (out);
+  \end{tikzpicture}\par
+  \vspace{0.35cm}
+  \begin{columns}[T]
+    \begin{column}{0.47\textwidth}
+      \begin{itemize}
+        \item \texttt{PointCloud2} : $x, y, z$, \alert{id du label},\\ confiance, horodatage
+        \item Table id $\leftrightarrow$ classe publiée \alert{une fois}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.47\textwidth}
+      \begin{itemize}
+        \item \alert{Namespaces} : \texttt{/scout/\dots}, \texttt{/ranger/\dots}
+        \item TF : repères \alert{préfixés} (\texttt{scout/base\_link})\\ dans un \alert{arbre unique}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
